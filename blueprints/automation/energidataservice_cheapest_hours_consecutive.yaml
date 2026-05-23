@@ -1,0 +1,179 @@
+blueprint:
+  name: Energi Data Service - Cheapest Consecutive Hours
+  description: Turn on a device/scene during the X cheapest consecutive hours of the day
+  domain: automation
+  input:
+    price_sensor:
+      name: Price Sensor
+      description: The energy price sensor from Energi Data Service
+      selector:
+        entity:
+          domain: sensor
+          multiple: false
+      default: sensor.energi_data_service
+
+    num_hours:
+      name: Number of Hours
+      description: How many consecutive hours to find (must be in sequence)
+      selector:
+        number:
+          min: 1
+          max: 24
+          step: 1
+          unit_of_measurement: hours
+      default: 4
+
+    action_target:
+      name: Action Target
+      description: What to turn on/off
+      selector:
+        entity:
+          domain:
+            - scene
+            - switch
+            - light
+          multiple: false
+
+    action_type:
+      name: Action Type
+      description: What action to perform
+      selector:
+        select:
+          options:
+            - label: Turn On
+              value: turn_on
+            - label: Turn Off
+              value: turn_off
+            - label: Toggle
+              value: toggle
+      default: turn_on
+
+    time_window_enabled:
+      name: Enable Time Window
+      description: Only search for cheapest hours within a specific time window
+      selector:
+        boolean:
+      default: false
+
+    time_window_start:
+      name: Time Window Start
+      description: Start time for search window (if enabled)
+      selector:
+        time:
+      default: "00:00:00"
+
+    time_window_end:
+      name: Time Window End
+      description: End time for search window (if enabled)
+      selector:
+        time:
+      default: "23:59:59"
+
+    override_mode:
+      name: Override Mode
+      description: Override the automatic logic (useful for manual control)
+      selector:
+        select:
+          options:
+            - label: Auto (normal logic)
+              value: auto
+            - label: Force Always On
+              value: force_on
+            - label: Force Always Off
+              value: force_off
+      default: auto
+
+variables:
+  price_sensor: !input price_sensor
+  num_hours: !input num_hours
+  action_target: !input action_target
+  action_type: !input action_type
+  time_window_enabled: !input time_window_enabled
+  time_window_start: !input time_window_start
+  time_window_end: !input time_window_end
+  override_mode: !input override_mode
+
+trigger:
+  - platform: time_pattern
+    minutes: "0"
+
+action:
+  - if:
+      - condition: template
+        value_template: "{{ override_mode != 'auto' }}"
+    then:
+      - if:
+          - condition: template
+            value_template: "{{ override_mode == 'force_on' }}"
+        then:
+          - action: homeassistant.turn_on
+            target:
+              entity_id: "{{ action_target }}"
+        else:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ action_target }}"
+    else:
+      - if:
+          - condition: template
+            value_template: >
+              {% set num_hours = num_hours | int %}
+              {% set prices = (state_attr(price_sensor, 'raw_today') or [])
+                            + (state_attr(price_sensor, 'raw_tomorrow') or [])
+                            + (state_attr(price_sensor, 'forecast') or []) %}
+              {% set current_hour = now().hour %}
+
+              {% if time_window_enabled %}
+                {% set start_hour = strptime(time_window_start, '%H:%M:%S').hour %}
+                {% set end_hour = strptime(time_window_end, '%H:%M:%S').hour %}
+              {% else %}
+                {% set start_hour = 0 %}
+                {% set end_hour = 23 %}
+              {% endif %}
+
+              {% set result = namespace(found=False) %}
+              {% for n in range((prices | length) - num_hours + 1) %}
+                {% set window_start_hour = prices[n].hour.hour %}
+                {% set window_end_hour = prices[n + num_hours - 1].hour.hour %}
+
+                {% if start_hour <= window_start_hour and window_end_hour <= end_hour %}
+                  {% set period_ns = namespace(sum=0) %}
+                  {% for i in range(num_hours) %}
+                    {% set period_ns.sum = period_ns.sum + prices[n + i].price %}
+                  {% endfor %}
+
+                  {% set min_ns = namespace(sum=999999) %}
+                  {% for m in range((prices | length) - num_hours + 1) %}
+                    {% if start_hour <= prices[m].hour.hour and prices[m + num_hours - 1].hour.hour <= end_hour %}
+                      {% set check_ns = namespace(sum=0) %}
+                      {% for j in range(num_hours) %}
+                        {% set check_ns.sum = check_ns.sum + prices[m + j].price %}
+                      {% endfor %}
+                      {% if check_ns.sum < min_ns.sum %}
+                        {% set min_ns.sum = check_ns.sum %}
+                      {% endif %}
+                    {% endif %}
+                  {% endfor %}
+
+                  {% if period_ns.sum == min_ns.sum and window_start_hour <= current_hour < window_end_hour + 1 %}
+                    {% set result.found = True %}
+                  {% endif %}
+                {% endif %}
+              {% endfor %}
+
+              {{ result.found }}
+        then:
+          - action: "homeassistant.{{ action_type }}"
+            target:
+              entity_id: "{{ action_target }}"
+        else:
+          - action: >
+              {% if action_type == 'turn_on' %}
+                homeassistant.turn_off
+              {% elif action_type == 'turn_off' %}
+                homeassistant.turn_on
+              {% else %}
+                homeassistant.toggle
+              {% endif %}
+            target:
+              entity_id: "{{ action_target }}"
