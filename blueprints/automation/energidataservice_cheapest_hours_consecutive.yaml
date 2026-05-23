@@ -83,6 +83,15 @@ blueprint:
               value: force_off
       default: auto
 
+    daily_notification:
+      name: Daily Schedule Notification
+      description: >
+        Send a notification at midnight with today's full price schedule,
+        showing which hours the device will be ON and OFF.
+      selector:
+        boolean:
+      default: false
+
 variables:
   price_sensor: !input price_sensor
   num_hours: !input num_hours
@@ -92,6 +101,7 @@ variables:
   time_window_start: !input time_window_start
   time_window_end: !input time_window_end
   override_mode: !input override_mode
+  daily_notification: !input daily_notification
   inverse_action_type: "{% if action_type == 'turn_on' %}turn_off{% elif action_type == 'turn_off' %}turn_on{% else %}toggle{% endif %}"
   in_cheap_window: >-
     {% set n = num_hours | int %}
@@ -165,3 +175,39 @@ action:
       - action: "homeassistant.{{ inverse_action_type }}"
         target:
           entity_id: "{{ action_target }}"
+
+  - if:
+      - condition: template
+        value_template: "{{ daily_notification | bool and now().hour == 0 }}"
+    then:
+      - action: persistent_notification.create
+        data:
+          notification_id: "eds_consecutive_{{ action_target | replace('.', '_') }}"
+          title: >-
+            Electricity Schedule — {{ now().strftime('%d %b %Y') }}
+          message: >-
+            {% set n = num_hours | int %}
+            {% set prices = state_attr(price_sensor, 'raw_today') or [] %}
+            {% set cheapest_hours = namespace(start=-1, end=-1, min_sum=999999) %}
+            {% for i in range((prices | length) - n + 1) %}
+              {% set s = namespace(total=0) %}
+              {% for j in range(n) %}
+                {% set s.total = s.total + prices[i + j].price %}
+              {% endfor %}
+              {% if s.total < cheapest_hours.min_sum %}
+                {% set cheapest_hours.min_sum = s.total %}
+                {% set cheapest_hours.start = prices[i].hour.hour %}
+                {% set cheapest_hours.end = prices[i + n - 1].hour.hour %}
+              {% endif %}
+            {% endfor %}
+            **{{ action_target }}** · {{ n }} cheapest consecutive hours
+
+            Cheapest window: **{{ '%02d' | format(cheapest_hours.start) }}:00 – {{ '%02d' | format(cheapest_hours.end) }}:00**
+            Avg price in window: {{ '%.3f' | format(cheapest_hours.min_sum / n) }} DKK/kWh
+
+            | Hour  | DKK/kWh | Status |
+            |-------|---------|--------|
+            {% for item in prices | sort(attribute='hour.hour') -%}
+            {% set h = item.hour.hour -%}
+            | {{ '%02d' | format(h) }}:00 | {{ '%.3f' | format(item.price) }} | {{ '✅ ON' if cheapest_hours.start <= h <= cheapest_hours.end else '⬜ off' }} |
+            {% endfor %}

@@ -1,0 +1,97 @@
+# Electricity Price & Schedule — ApexCharts Card
+#
+# Requirements: ApexCharts Card from HACS
+#   https://github.com/RomRider/apexcharts-card
+#
+# Instructions:
+#   1. Install ApexCharts Card via HACS → Frontend
+#   2. In your dashboard: Add Card → Manual → paste this YAML
+#   3. Change the two variables at the top to match your setup:
+#      - price_sensor: your Energi Data Service entity
+#      - num_hours:    same value as in your automation blueprint
+#
+# The chart shows:
+#   Green bars  = device ON  (cheapest N hours)
+#   Red bars    = device OFF (remaining hours)
+#   Bar height  = electricity price in DKK/kWh
+
+type: custom:apexcharts-card
+header:
+  show: true
+  title: Electricity Price & Schedule
+  show_states: false
+graph_span: 24h
+span:
+  start: day
+apex_config:
+  chart:
+    type: bar
+    height: 280
+    toolbar:
+      show: false
+  plotOptions:
+    bar:
+      columnWidth: 90%
+  dataLabels:
+    enabled: false
+  xaxis:
+    type: datetime
+    labels:
+      datetimeFormatter:
+        hour: "HH:mm"
+      rotate: -45
+      rotateAlways: false
+  yaxis:
+    title:
+      text: DKK/kWh
+    min: 0
+    forceNiceScale: true
+  tooltip:
+    x:
+      format: "HH:mm"
+    y:
+      formatter: |
+        function(val) { return val > 0 ? val.toFixed(3) + ' DKK/kWh' : ''; }
+  legend:
+    show: true
+    position: top
+series:
+  - entity: sensor.energi_data_service   # <-- change to your price sensor entity
+    name: Pump ON
+    color: "#00b894"
+    type: column
+    data_generator: |
+      // ─── CONFIG ──────────────────────────────────
+      const NUM_HOURS = 12;              // change to match your blueprint setting
+      // ─────────────────────────────────────────────
+      const prices = entity.attributes.raw_today || [];
+      const sorted = [...prices].sort((a, b) => a.price - b.price);
+      const cheapSet = new Set(
+        sorted.slice(0, NUM_HOURS).map(p => new Date(p.hour).getHours())
+      );
+      return prices
+        .filter(p => cheapSet.has(new Date(p.hour).getHours()))
+        .map(p => ({
+          x: new Date(p.hour).getTime(),
+          y: parseFloat(p.price.toFixed(3))
+        }));
+
+  - entity: sensor.energi_data_service   # <-- change to your price sensor entity
+    name: Pump OFF
+    color: "#e17055"
+    type: column
+    data_generator: |
+      // ─── CONFIG ──────────────────────────────────
+      const NUM_HOURS = 12;              // change to match your blueprint setting
+      // ─────────────────────────────────────────────
+      const prices = entity.attributes.raw_today || [];
+      const sorted = [...prices].sort((a, b) => a.price - b.price);
+      const cheapSet = new Set(
+        sorted.slice(0, NUM_HOURS).map(p => new Date(p.hour).getHours())
+      );
+      return prices
+        .filter(p => !cheapSet.has(new Date(p.hour).getHours()))
+        .map(p => ({
+          x: new Date(p.hour).getTime(),
+          y: parseFloat(p.price.toFixed(3))
+        }));
