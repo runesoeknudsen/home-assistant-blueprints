@@ -50,7 +50,7 @@ blueprint:
 
     time_window_enabled:
       name: Enable Time Window
-      description: Only search for cheapest hours within a specific time window
+      description: Only search for cheapest consecutive hours within a specific time window
       selector:
         boolean:
       default: false
@@ -92,88 +92,76 @@ variables:
   time_window_start: !input time_window_start
   time_window_end: !input time_window_end
   override_mode: !input override_mode
+  inverse_action_type: "{% if action_type == 'turn_on' %}turn_off{% elif action_type == 'turn_off' %}turn_on{% else %}toggle{% endif %}"
+  in_cheap_window: >-
+    {% set n = num_hours | int %}
+    {% set prices = (state_attr(price_sensor, 'raw_today') or [])
+                  + (state_attr(price_sensor, 'raw_tomorrow') or [])
+                  + (state_attr(price_sensor, 'forecast') or []) %}
+    {% set current_hour = now().hour %}
+    {% if time_window_enabled | bool %}
+      {% set start_hour = strptime(time_window_start, '%H:%M:%S').hour %}
+      {% set end_hour = strptime(time_window_end, '%H:%M:%S').hour %}
+    {% else %}
+      {% set start_hour = 0 %}
+      {% set end_hour = 23 %}
+    {% endif %}
+    {% set result = namespace(found=False) %}
+    {% for i in range((prices | length) - n + 1) %}
+      {% set ws = prices[i].hour.hour %}
+      {% set we = prices[i + n - 1].hour.hour %}
+      {% if start_hour <= ws and we <= end_hour %}
+        {% set period_ns = namespace(sum=0) %}
+        {% for j in range(n) %}
+          {% set period_ns.sum = period_ns.sum + prices[i + j].price %}
+        {% endfor %}
+        {% set min_ns = namespace(sum=999999) %}
+        {% for m in range((prices | length) - n + 1) %}
+          {% if start_hour <= prices[m].hour.hour and prices[m + n - 1].hour.hour <= end_hour %}
+            {% set check_ns = namespace(sum=0) %}
+            {% for k in range(n) %}
+              {% set check_ns.sum = check_ns.sum + prices[m + k].price %}
+            {% endfor %}
+            {% if check_ns.sum < min_ns.sum %}
+              {% set min_ns.sum = check_ns.sum %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {% if period_ns.sum == min_ns.sum and ws <= current_hour < we + 1 %}
+          {% set result.found = True %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {{ result.found }}
 
 trigger:
   - platform: time_pattern
     minutes: "0"
 
 action:
-  - if:
-      - condition: template
-        value_template: "{{ override_mode != 'auto' }}"
-    then:
-      - if:
+  - choose:
+      - conditions:
           - condition: template
             value_template: "{{ override_mode == 'force_on' }}"
-        then:
+        sequence:
           - action: homeassistant.turn_on
             target:
               entity_id: "{{ action_target }}"
-        else:
+      - conditions:
+          - condition: template
+            value_template: "{{ override_mode == 'force_off' }}"
+        sequence:
           - action: homeassistant.turn_off
             target:
               entity_id: "{{ action_target }}"
-    else:
-      - if:
+      - conditions:
           - condition: template
-            value_template: >
-              {% set num_hours = num_hours | int %}
-              {% set prices = (state_attr(price_sensor, 'raw_today') or [])
-                            + (state_attr(price_sensor, 'raw_tomorrow') or [])
-                            + (state_attr(price_sensor, 'forecast') or []) %}
-              {% set current_hour = now().hour %}
-
-              {% if time_window_enabled %}
-                {% set start_hour = strptime(time_window_start, '%H:%M:%S').hour %}
-                {% set end_hour = strptime(time_window_end, '%H:%M:%S').hour %}
-              {% else %}
-                {% set start_hour = 0 %}
-                {% set end_hour = 23 %}
-              {% endif %}
-
-              {% set result = namespace(found=False) %}
-              {% for n in range((prices | length) - num_hours + 1) %}
-                {% set window_start_hour = prices[n].hour.hour %}
-                {% set window_end_hour = prices[n + num_hours - 1].hour.hour %}
-
-                {% if start_hour <= window_start_hour and window_end_hour <= end_hour %}
-                  {% set period_ns = namespace(sum=0) %}
-                  {% for i in range(num_hours) %}
-                    {% set period_ns.sum = period_ns.sum + prices[n + i].price %}
-                  {% endfor %}
-
-                  {% set min_ns = namespace(sum=999999) %}
-                  {% for m in range((prices | length) - num_hours + 1) %}
-                    {% if start_hour <= prices[m].hour.hour and prices[m + num_hours - 1].hour.hour <= end_hour %}
-                      {% set check_ns = namespace(sum=0) %}
-                      {% for j in range(num_hours) %}
-                        {% set check_ns.sum = check_ns.sum + prices[m + j].price %}
-                      {% endfor %}
-                      {% if check_ns.sum < min_ns.sum %}
-                        {% set min_ns.sum = check_ns.sum %}
-                      {% endif %}
-                    {% endif %}
-                  {% endfor %}
-
-                  {% if period_ns.sum == min_ns.sum and window_start_hour <= current_hour < window_end_hour + 1 %}
-                    {% set result.found = True %}
-                  {% endif %}
-                {% endif %}
-              {% endfor %}
-
-              {{ result.found }}
-        then:
+            value_template: "{{ in_cheap_window | bool }}"
+        sequence:
           - action: "homeassistant.{{ action_type }}"
             target:
               entity_id: "{{ action_target }}"
-        else:
-          - action: >
-              {% if action_type == 'turn_on' %}
-                homeassistant.turn_off
-              {% elif action_type == 'turn_off' %}
-                homeassistant.turn_on
-              {% else %}
-                homeassistant.toggle
-              {% endif %}
-            target:
-              entity_id: "{{ action_target }}"
+    default:
+      - action: "homeassistant.{{ inverse_action_type }}"
+        target:
+          entity_id: "{{ action_target }}"

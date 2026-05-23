@@ -1,4 +1,6 @@
 {
     "name": "Energi Data Service Blueprints",
-    "homeassistant": "2024.6.0"
+    "homeassistant": "2024.6.0",
+    "country": ["DK"],
+    "hacs": "2.0.0"
 }

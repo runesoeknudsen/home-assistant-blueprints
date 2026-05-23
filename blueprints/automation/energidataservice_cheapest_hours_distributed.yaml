@@ -92,62 +92,53 @@ variables:
   time_window_start: !input time_window_start
   time_window_end: !input time_window_end
   override_mode: !input override_mode
+  inverse_action_type: "{% if action_type == 'turn_on' %}turn_off{% elif action_type == 'turn_off' %}turn_on{% else %}toggle{% endif %}"
+  in_cheap_hour: >-
+    {% set n = num_hours | int %}
+    {% set prices = (state_attr(price_sensor, 'raw_today') or [])
+                  + (state_attr(price_sensor, 'raw_tomorrow') or [])
+                  + (state_attr(price_sensor, 'forecast') or []) %}
+    {% set current_hour = now().hour %}
+    {% if time_window_enabled | bool %}
+      {% set start_hour = strptime(time_window_start, '%H:%M:%S').hour %}
+      {% set end_hour = strptime(time_window_end, '%H:%M:%S').hour %}
+      {% set filtered = prices | selectattr('hour.hour', 'ge', start_hour)
+                               | selectattr('hour.hour', 'le', end_hour) | list %}
+    {% else %}
+      {% set filtered = prices %}
+    {% endif %}
+    {% set cheapest = (filtered | sort(attribute='price') | list)[:n]
+                    | map(attribute='hour.hour') | list %}
+    {{ current_hour in cheapest }}
 
 trigger:
   - platform: time_pattern
     minutes: "0"
 
 action:
-  - if:
-      - condition: template
-        value_template: "{{ override_mode != 'auto' }}"
-    then:
-      - if:
+  - choose:
+      - conditions:
           - condition: template
             value_template: "{{ override_mode == 'force_on' }}"
-        then:
+        sequence:
           - action: homeassistant.turn_on
             target:
               entity_id: "{{ action_target }}"
-        else:
+      - conditions:
+          - condition: template
+            value_template: "{{ override_mode == 'force_off' }}"
+        sequence:
           - action: homeassistant.turn_off
             target:
               entity_id: "{{ action_target }}"
-    else:
-      - if:
+      - conditions:
           - condition: template
-            value_template: >
-              {% set num_hours = num_hours | int %}
-              {% set prices = (state_attr(price_sensor, 'raw_today') or [])
-                            + (state_attr(price_sensor, 'raw_tomorrow') or [])
-                            + (state_attr(price_sensor, 'forecast') or []) %}
-              {% set current_hour = now().hour %}
-
-              {% if time_window_enabled %}
-                {% set start_hour = strptime(time_window_start, '%H:%M:%S').hour %}
-                {% set end_hour = strptime(time_window_end, '%H:%M:%S').hour %}
-                {% set filtered_prices = prices | selectattr('hour.hour', 'ge', start_hour)
-                                               | selectattr('hour.hour', 'le', end_hour) | list %}
-              {% else %}
-                {% set filtered_prices = prices %}
-              {% endif %}
-
-              {% set sorted_prices = (filtered_prices | sort(attribute='price') | list)[:num_hours] %}
-              {% set cheapest_hours = sorted_prices | map(attribute='hour.hour') | list %}
-
-              {{ current_hour in cheapest_hours }}
-        then:
+            value_template: "{{ in_cheap_hour | bool }}"
+        sequence:
           - action: "homeassistant.{{ action_type }}"
             target:
               entity_id: "{{ action_target }}"
-        else:
-          - action: >
-              {% if action_type == 'turn_on' %}
-                homeassistant.turn_off
-              {% elif action_type == 'turn_off' %}
-                homeassistant.turn_on
-              {% else %}
-                homeassistant.toggle
-              {% endif %}
-            target:
-              entity_id: "{{ action_target }}"
+    default:
+      - action: "homeassistant.{{ inverse_action_type }}"
+        target:
+          entity_id: "{{ action_target }}"
